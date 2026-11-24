@@ -243,6 +243,14 @@ class MqttSensor(MqttEntity, RestoreSensor):
                 remain_seconds,
             )
 
+    @callback
+    @override
+    def async_mqtt_connection_state_changed(self, state: bool) -> None:
+        """Discard the cached reading when the broker disconnects."""
+        if not state and not self.hass.is_stopping:
+            self._attr_native_value = None
+        super().async_mqtt_connection_state_changed(state)
+
     @override
     async def async_will_remove_from_hass(self) -> None:
         """Remove expire triggers."""

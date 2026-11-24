@@ -64,7 +64,7 @@ from pytest_homeassistant.components.mqtt.common import (
 from pytest_homeassistant.typing import MqttMockHAClientGenerator, MqttMockPahoClient
 
 from homeassistant.components import sensor
-from homeassistant.components.mqtt.const import DOMAIN
+from homeassistant.components.mqtt.const import DOMAIN, MQTT_CONNECTION_STATE
 from homeassistant.components.mqtt.sensor import MQTT_SENSOR_ATTRIBUTES_BLOCKED
 from homeassistant.const import (
     ATTR_UNIT_OF_MEASUREMENT,
@@ -82,6 +82,7 @@ from homeassistant.helpers import (
     entity_registry as er,
     issue_registry as ir,
 )
+from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.typing import ConfigType
 from homeassistant.util import dt as dt_util
 
@@ -818,6 +819,48 @@ async def test_availability_when_connection_lost(
     await help_test_availability_when_connection_lost(
         hass, mqtt_mock_entry, sensor.DOMAIN
     )
+
+
+@pytest.mark.parametrize(
+    "hass_config",
+    [
+        {
+            DOMAIN: {
+                sensor.DOMAIN: {
+                    "name": "test",
+                    "state_topic": "room",
+                    "availability_topic": "status",
+                    "unit_of_measurement": "°C",
+                    "value_template": "{{ value_json.get('temperature', '') }}",
+                }
+            }
+        }
+    ],
+)
+async def test_reconnect_waits_for_sensor_reading(
+    hass: HomeAssistant, mqtt_mock_entry: MqttMockHAClientGenerator
+) -> None:
+    """Wait for a new temperature after reconnecting to the broker."""
+    client = await mqtt_mock_entry()
+    async_fire_mqtt_message(hass, "status", "online")
+    async_fire_mqtt_message(hass, "room", '{"temperature":19}')
+    assert hass.states.get("sensor.test").state == "19"
+
+    client.connected = False
+    async_dispatcher_send(hass, MQTT_CONNECTION_STATE, False)
+    await hass.async_block_till_done()
+    assert hass.states.get("sensor.test").state == STATE_UNAVAILABLE
+    client.connected = True
+    async_dispatcher_send(hass, MQTT_CONNECTION_STATE, True)
+    await hass.async_block_till_done()
+    assert hass.states.get("sensor.test").state == STATE_UNKNOWN
+
+    async_fire_mqtt_message(hass, "room", '{"humidity":63}')
+    assert hass.states.get("sensor.test").state == STATE_UNKNOWN
+
+    # The publisher was already online and has not repeated its availability.
+    async_fire_mqtt_message(hass, "room", '{"temperature":21.5}')
+    assert hass.states.get("sensor.test").state == "21.5"
 
 
 @pytest.mark.parametrize("hass_config", [DEFAULT_CONFIG])
